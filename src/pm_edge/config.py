@@ -54,6 +54,7 @@ class KalshiVenue(BaseModel):
 class PolymarketVenue(BaseModel):
     gamma_url: str
     clob_url: str
+    data_url: str = "https://data-api.polymarket.com"
     max_requests_per_second: float = 20
     books_batch_size: int = 100
     prices_history_fidelity_minutes: int = 1
@@ -164,6 +165,20 @@ class Collector(BaseModel):
     live_dir: str = "data/live"
 
 
+class CollectorLite(BaseModel):
+    window_before_kickoff_hours: float = 3
+    window_after_kickoff_hours: float = 0
+    book_poll_seconds: int = 20
+    orderbook_depth: int = 3
+    odds_poll_seconds: int = 600
+    odds_bookmakers: list[str] = Field(default_factory=lambda: ["pinnacle"])
+    odds_credit_floor: int = 50
+    schedule_refresh_seconds: int = 1800
+    schedule_lookahead_hours: float = 48
+    flush_seconds: int = 120
+    live_dir: str = "data/live"
+
+
 class Decision(BaseModel):
     min_executable_episodes_per_matchday: float = 3
     executable_threshold: float = 0.02
@@ -190,6 +205,7 @@ class Config(BaseModel):
     normalize: Normalize = Field(default_factory=Normalize)
     analysis: Analysis
     collector: Collector = Field(default_factory=Collector)
+    collector_lite: CollectorLite = Field(default_factory=CollectorLite)
     decision: Decision = Field(default_factory=Decision)
     paths: Paths = Field(default_factory=Paths)
 

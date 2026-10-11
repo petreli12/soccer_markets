@@ -394,6 +394,13 @@ This is the live re-check of the forward-fill assumption in §5.2.
   - Any snapshot quote that differs from the forward-filled value, listed with ticker, timestamp and gap length.
 - Results go into this section and drive `normalize.staleness_minutes.kalshi_historical`.
 
+### 5.10 Collector-lite findings (2026-10-11)
+- **The CLOB book's `last_trade_price` is market-level and in the units of whichever token traded last.** The YES and NO books return the same value.
+  - Example: Coventry YES bid/ask 0.30/0.31 while both books show 0.69. Data-api `/trades` confirms the last trade was NO at 0.69.
+  - The collector therefore takes the last trade from `GET https://data-api.polymarket.com/trades?market={conditionId}&limit=1` (public). It stores the YES-equivalent price, with a NO trade at p recorded as 1 − p, plus its time and token. The book value is kept raw as `book_last_trade_raw`.
+- **`/prices-history` is the YES midpoint** in a first 2-minute sample. 153 of 153 history points equalled the live book midpoint, within 0.0005, from the latest snapshot ≤ 30 s earlier. The mean difference from the YES-equivalent last trade was 0.56¢. The matchday notebook re-checks this on each matchday before `price_basis = "midpoint"` is adopted.
+- **Credit plan:** 495 credits remain on the free tier. The schedule implies about 180 Pinnacle calls through 19 Oct, and roughly 280 over the two-week run.
+
 ### 5.9 Matching (step 4)
 - `data/team_aliases.csv` (columns `alias, canonical, note`) is the only versioned file under `data/`. It covers every variant seen on Kalshi, Polymarket and the Odds API for EPL and UCL: 58 canonical teams.
 - **Lookup normalisation:** case-folded; accents stripped, with ø→o; apostrophes and backticks removed; `&` becomes "and"; other punctuation becomes a space. So `Be`er Sheva`, `Be'er Sheva` and `Beer Sheva` are the same key.

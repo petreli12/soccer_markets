@@ -11,6 +11,7 @@ from pm_edge.config import Config
 from pm_edge.ingest.polymarket import (
     UnmappedEvent,
     is_full_time_result_event,
+    last_trade_yes,
     map_market_outcome,
     market_result,
     parse_books,
@@ -198,6 +199,12 @@ def test_parse_books_ignores_api_ordering(cfg: Config) -> None:
     assert b.last_trade_price == 0.53 and b.min_order_size == 5 and b.tick_size == 0.001
     assert b.midpoint == pytest.approx(0.535)
     assert b.ts_utc.year == 2026
+
+
+def test_last_trade_converted_to_yes_terms() -> None:
+    assert last_trade_yes({"outcome": "No", "price": 0.69, "timestamp": 1791748060})[0] == pytest.approx(0.31)
+    assert last_trade_yes({"outcome": "Yes", "price": 0.31, "timestamp": 1791748060})[0] == 0.31
+    assert last_trade_yes({"outcome": "Over", "price": 0.5, "timestamp": 1}) is None
 
 
 def test_price_history_parsed_sorted_dedup() -> None:

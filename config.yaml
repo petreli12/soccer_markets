@@ -43,6 +43,7 @@ venues:
   polymarket:
     gamma_url: https://gamma-api.polymarket.com
     clob_url: https://clob.polymarket.com
+    data_url: https://data-api.polymarket.com   # public trades (which token traded, price, time)
     max_requests_per_second: 20
     books_batch_size: 100
     prices_history_fidelity_minutes: 1    # ~1 point/min, not minute-aligned; Yes token only (No = 1 - p)
@@ -117,6 +118,19 @@ collector:
   lookahead_hours: 48
   inplay_tail_hours: 3                    # keep polling this long after kickoff
   orderbook_depth: 5
+  live_dir: data/live
+
+collector_lite:                           # `pm-edge collect-lite`: two-week confirmation run
+  window_before_kickoff_hours: 3
+  window_after_kickoff_hours: 0           # pre-kickoff only
+  book_poll_seconds: 20                   # Kalshi + Polymarket books, all three outcomes
+  orderbook_depth: 3
+  odds_poll_seconds: 600                  # Pinnacle h2h; 1 credit per league per call
+  odds_bookmakers: [pinnacle]
+  odds_credit_floor: 50                   # stop odds polling below this many remaining credits
+  schedule_refresh_seconds: 1800          # re-list open matches on both venues and re-match
+  schedule_lookahead_hours: 48
+  flush_seconds: 120                      # buffered rows are appended to parquet this often
   live_dir: data/live
 
 decision:

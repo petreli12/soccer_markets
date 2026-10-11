@@ -245,6 +245,20 @@ def parse_books(contract: VenueContract, yes_book: dict[str, Any], no_book: dict
     )
 
 
+def last_trade_yes(trade: dict[str, Any]) -> tuple[float, datetime, str] | None:
+    """YES-equivalent price, time and token of a data-api trade (a NO trade at p is YES at 1 - p).
+
+    Needed because the CLOB book's ``last_trade_price`` is market-level and quoted in whichever token
+    traded last (verified 2026-10-11: both books show the NO trade price 0.69 while YES is 0.30/0.31).
+    """
+    outcome = str(trade.get("outcome", "")).casefold()
+    if outcome not in {"yes", "no"} or trade.get("price") is None:
+        return None
+    price = float(trade["price"])
+    ts = datetime.fromtimestamp(int(trade["timestamp"]), UTC)
+    return (price if outcome == "yes" else round(1 - price, 6)), ts, outcome
+
+
 def parse_price_history(history: list[dict[str, Any]]) -> pd.DataFrame:
     """``/prices-history`` points to ``ts, price``. Points are ~1/min but not minute-aligned."""
     df = pd.DataFrame(
@@ -266,12 +280,23 @@ class PolymarketIngest:
         vc = cfg.venues.polymarket
         self.gamma = gamma or ApiClient(vc.gamma_url, vc.max_requests_per_second)
         self.clob = clob or ApiClient(vc.clob_url, vc.max_requests_per_second)
+        self.data = ApiClient(vc.data_url, min(vc.max_requests_per_second, 10))
 
     async def __aenter__(self) -> PolymarketIngest:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        await asyncio.gather(self.gamma.aclose(), self.clob.aclose())
+        await asyncio.gather(self.gamma.aclose(), self.clob.aclose(), self.data.aclose())
+
+    async def fetch_last_trades(self, condition_ids: list[str]) -> dict[str, tuple[float, datetime, str]]:
+        """Latest public trade per market as ``(yes_equivalent_price, time, token)``."""
+
+        async def one(cid: str) -> tuple[str, tuple[float, datetime, str] | None]:
+            trades = await self.data.get_json("/trades", params={"market": cid, "limit": 1})
+            return cid, last_trade_yes(trades[0]) if trades else None
+
+        results = await asyncio.gather(*(one(c) for c in condition_ids))
+        return {cid: t for cid, t in results if t is not None}
 
     async def iter_events(
         self,

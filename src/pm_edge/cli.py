@@ -50,6 +50,28 @@ def match(
     typer.echo(f"review file: {cfg.matching.review_path}")
 
 
+@app.command("collect-lite")
+def collect_lite(
+    league: list[str] = typer.Option(None, help="League(s) to collect; default: every enabled league"),
+    log_file: str = typer.Option("data/live/collector.log", help="Rotating log file (also logs to stderr)"),
+) -> None:
+    """Pre-kickoff live snapshots (books every 20 s, Pinnacle every 10 min) for matched matches."""
+    from logging.handlers import RotatingFileHandler
+
+    from pm_edge import collector_lite
+
+    cfg = load_config()
+    path = cfg.resolve(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(path, maxBytes=20_000_000, backupCount=5)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    leagues = league or [name for name, lc in cfg.leagues.items() if lc.enabled]
+    asyncio.run(collector_lite.run(cfg, leagues))
+
+
 @app.command("verify-kalshi-gaps")
 def verify_kalshi_gaps(
     league: str = typer.Option("EPL"),
