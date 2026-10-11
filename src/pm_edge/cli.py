@@ -72,6 +72,45 @@ def collect_lite(
     asyncio.run(collector_lite.run(cfg, leagues))
 
 
+@app.command("thin-scan")
+def thin_scan(
+    league: list[str] = typer.Option(None, help="League(s); default: every enabled league"),
+    kickoff_within_hours: float = typer.Option(None, help="Only events kicking off within this many hours from now"),
+    spread_min: float = typer.Option(0.03, help="'Wide' means spread above this (dollars)"),
+    usd_min: float = typer.Option(500, help="Minimum dollars at the best price"),
+    trade_window_hours: float = typer.Option(3, help="Count public trades in this many past hours"),
+    top: int = typer.Option(25, help="Rows of wide-and-deep markets to print"),
+) -> None:
+    """Scan Polymarket non-moneyline soccer markets: spreads, depth, 24h volume, recent trades."""
+    import pandas as pd
+
+    from pm_edge import thin_scan as ts
+
+    cfg = load_config()
+    leagues = league or [name for name, lc in cfg.leagues.items() if lc.enabled]
+    df, summary, path = ts.run(cfg, leagues, kickoff_within_hours, cfg.resolve(cfg.paths.processed_dir) / "thin_scan",
+                               spread_min, usd_min, trade_window_hours)
+    if df.empty:
+        typer.echo("no markets matched")
+        return
+    tcol = f"trades_{trade_window_hours:g}h"
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_rows", 200)
+    typer.echo(f"{df['event_slug'].nunique()} events, {len(df)} markets {df.groupby('league').size().to_dict()}; "
+               f"two-sided {df['two_sided'].mean():.1%}; 24h volume ${df['volume_24h'].sum():,.0f}; "
+               f"{tcol} {int(df[tcol].sum())} trades in {int((df[tcol] > 0).sum())} markets")
+    typer.echo(summary.round(2).to_string())
+    wide = df["spread"] > spread_min + 1e-9
+    hits = df[wide & (df["ask_usd"] >= usd_min)].sort_values([tcol, "volume_24h"], ascending=False)
+    both = int((hits["bid_usd"] >= usd_min).sum())
+    typer.echo(f"\nspread > {spread_min * 100:g}c and >= ${usd_min:g} at best ask: {len(hits)} markets "
+               f"(both sides >= ${usd_min:g}: {both})")
+    if len(hits):
+        typer.echo(hits.head(top)[["league", "event_slug", "question", "best_bid", "best_ask", "spread", "bid_usd",
+                                   "ask_usd", "volume_24h", tcol]].round(3).to_string(index=False))
+    typer.echo(f"\nfull table: {path}")
+
+
 @app.command("verify-kalshi-gaps")
 def verify_kalshi_gaps(
     league: str = typer.Option("EPL"),

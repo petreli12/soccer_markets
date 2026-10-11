@@ -81,6 +81,8 @@ def levels(row: pd.Series, side: str) -> list[tuple[float, float]]:
 
 
 def executable(d: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if d["kalshi"].empty or d["polymarket"].empty:
+        return pd.DataFrame()
     sched = d["schedule"].set_index(["match_id", "venue", "outcome"])
     k = d["kalshi"].set_index(["ts_poll", "match_id", "outcome"])
     p = d["polymarket"].set_index(["ts_poll", "match_id", "outcome"])
@@ -195,6 +197,70 @@ def report_sharp(sh: pd.DataFrame) -> None:
     print("  share of matches with any fresh comparison >3c:", per_match.groupby("venue").mean().round(3).to_dict())
 
 
+def outcome_roles(ok: pd.DataFrame) -> pd.Series:
+    """'draw', or 'favourite'/'underdog' by Pinnacle's median de-vigged home vs away probability."""
+    p = ok[ok["outcome"] != "draw"].groupby(["match_id", "outcome"])["p_devig"].median().unstack()
+    fav = (p.get("home") >= p.get("away")).map({True: "home", False: "away"})
+    role = ok["match_id"].map(fav)
+    return pd.Series(
+        np.where(ok["outcome"] == "draw", "draw", np.where(ok["outcome"] == role, "favourite", "underdog")),
+        index=ok.index,
+    )
+
+
+def report_decision(sh: pd.DataFrame, final_minutes: float = 180, cents: float = 3.0) -> None:
+    """Decision metric: share of matches where a venue's mid is >= 3c from fresh Pinnacle in the final 3h.
+
+    Base = matches with at least one fresh comparison (Pinnacle last_update within the age limit)
+    at 0 < minutes_to_kickoff <= 180. Direction is reported per outcome role (favourite / draw /
+    underdog) because the three probabilities sum to ~1, so a venue above Pinnacle on one outcome
+    is below on another. Per (venue, match, outcome) the sign is that of the largest |gap|.
+    """
+    print(f"\n=== DECISION: mid vs fresh Pinnacle >= {cents:g}c, final {final_minutes / 60:g}h ===")
+    if sh.empty:
+        print("  no Pinnacle comparisons")
+        return
+    ok = sh[sh["mid"].notna() & sh["fresh"] & (sh["minutes_to_kickoff"] > 0)
+            & (sh["minutes_to_kickoff"] <= final_minutes)].copy()
+    if ok.empty:
+        print("  no fresh comparisons in the window")
+        return
+    ok["hit"] = (ok["gap"].abs() * 100).round(6) >= cents
+    ok["role"] = outcome_roles(ok)
+    per = ok.groupby(["match_id", "venue"])["hit"].any().unstack()
+    n = len(per)
+    either = per.any(axis=1)
+    print(f"  matches with a fresh comparison: {n}")
+    for v in per.columns:
+        base = per[v].notna().sum()
+        print(f"  {v:10s}: {int(per[v].fillna(False).sum())}/{base} matches ({per[v].fillna(False).sum() / max(base, 1):.0%})")
+    print(f"  either    : {int(either.sum())}/{n} matches ({either.mean():.0%})")
+
+    hits = ok[ok["hit"]]
+    if hits.empty:
+        return
+    idx = hits["gap"].abs().groupby([hits["venue"], hits["match_id"], hits["outcome"]]).idxmax()
+    top = hits.loc[idx.values].assign(
+        above=lambda x: x["gap"] > 0,
+        n_hits=hits.groupby(["venue", "match_id", "outcome"]).size().values,
+        same_sign=hits.assign(s=np.sign(hits["gap"])).groupby(["venue", "match_id", "outcome"])["s"]
+        .agg(lambda s: max((s > 0).mean(), (s < 0).mean())).values,
+    )
+    print("  largest gap per (venue, match, outcome) with a hit:")
+    print(top.sort_values(["venue", "match_id"])[
+        ["venue", "match_id", "outcome", "role", "minutes_to_kickoff", "mid", "p_devig", "gap", "n_hits", "same_sign"]
+    ].round(4).to_string(index=False))
+    print("  direction across matches (venue above / below Pinnacle, by outcome role):")
+    for (v, role), g in top.groupby(["venue", "role"]):
+        up, dn = int(g["above"].sum()), int((~g["above"]).sum())
+        verdict = "consistent" if (up == 0 or dn == 0) and len(g) >= 2 else ("mixed" if up and dn else "single")
+        print(f"    {v:10s} {role:9s}: above {up}, below {dn} over {g['match_id'].nunique()} matches -> {verdict}")
+    sg = ok.groupby(["venue", "role", "match_id"])["gap"].mean().groupby(["venue", "role"])
+    print("  signed mean gap per match, all fresh final-window comparisons (share of matches with venue above):")
+    print(pd.DataFrame({"matches": sg.size(), "mean_c": sg.mean() * 100,
+                        "share_above": sg.apply(lambda s: (s > 0).mean())}).round(2).to_string())
+
+
 async def history_vs_live(d: dict[str, pd.DataFrame]) -> pd.DataFrame:
     sched = d["schedule"][d["schedule"]["venue"] == "polymarket"]
     live = d["polymarket"]
@@ -251,7 +317,9 @@ def main() -> None:
             print(f"  {v} spread mean {sp.mean():.2f}c, median {sp.median():.2f}c; best-ask size median "
                   f"{d[v]['yes_ask_sz_1'].median():.0f}")
     report_executable(executable(d))
-    report_sharp(sharp(d))
+    sh = sharp(d)
+    report_sharp(sh)
+    report_decision(sh)
     if not args.skip_history:
         report_history(asyncio.run(history_vs_live(d)))
 
