@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import typer
 
 from pm_edge.config import Config, load_config
-from pm_edge.ingest import kalshi
+from pm_edge.ingest import kalshi, polymarket
 
 app = typer.Typer(no_args_is_help=True, help="Read-only research on prediction-market vs sportsbook pricing gaps.")
 
@@ -25,11 +25,16 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
 def backfill(
     league: str = typer.Option(..., help="League key from config.yaml, e.g. EPL"),
     days: int = typer.Option(60, help="Look back this many days of kickoffs"),
+    venue: list[str] = typer.Option(["kalshi", "polymarket"], help="Venues to backfill (repeatable)"),
 ) -> None:
-    """Backfill historical data for finished matches. Kalshi only until later build steps add other venues."""
+    """Backfill historical data for finished matches. Sportsbooks are added in a later build step."""
     cfg = load_config()
-    summary = asyncio.run(kalshi.backfill(cfg, league, days))
-    typer.echo(json.dumps({"kalshi": summary}, indent=2))
+    runners = {"kalshi": kalshi.backfill, "polymarket": polymarket.backfill}
+    unknown = set(venue) - set(runners)
+    if unknown:
+        raise typer.BadParameter(f"unknown venue(s): {sorted(unknown)}; choose from {sorted(runners)}")
+    summary = {v: asyncio.run(runners[v](cfg, league, days)) for v in venue}
+    typer.echo(json.dumps(summary, indent=2))
 
 
 @app.command("verify-kalshi-gaps")

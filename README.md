@@ -18,7 +18,8 @@ cp .env.example .env   # add ODDS_API_KEY when available
 ## Commands (so far)
 
 ```bash
-pm-edge backfill --league EPL --days 60   # Kalshi only at this build step
+pm-edge backfill --league EPL --days 60   # Kalshi + Polymarket (sportsbooks in a later step)
+pm-edge backfill --league EPL --days 60 --venue polymarket   # one venue only
 pm-edge verify-kalshi-gaps --league EPL   # re-test "missing candle == no change"
 ```
 

@@ -160,6 +160,11 @@ fee_dollars = round_up( M × 0.07 × C × P × (1 − P) )
 Select the event whose markets all have `sportsMarketType == "moneyline"`, count exactly 3, and whose slug has no suffix after the date.
 
 Useful Gamma params: `series_id`, `tag_id`, `closed`, `active`, `start_date_min`/`max`, `end_date_min`/`max`, `limit`, `offset` (or the keyset endpoint with `after_cursor`).
+- Event `startDate` is the **listing** time, about 2 weeks before the match. Event `endDate` equals kickoff. Ingest therefore filters on `end_date_min`/`max`, then re-checks kickoff client-side.
+- Verified 2026-10-11: 59 closed EPL base events had kickoffs in the last 60 days, one per Kalshi match.
+  - Each fixture also has up to 10 sibling events (halftime-result, exact-score, corners and so on), and all are ignored.
+  - All 59 mapped via `opticOddsSelectionLine`.
+  - Moneyline markets have `orderPriceMinTickSize` **0.001** (Kalshi uses 0.01) and `orderMinSize` 5.
 
 ### Match structure
 The match event is a **negative-risk** event (`negRisk: true`, with a `negRiskMarketID`) containing **three binary Yes/No markets**:
@@ -212,6 +217,12 @@ Price history:
 ```
 - About 1 point per minute at `fidelity=1`. Verified 7+ days back for a match settled today (10,218 points).
 - **`p` is a single price, and the docs don't say whether it is midpoint or last trade. There is no bid/ask history.** Historical cross-venue gaps involving Polymarket are therefore labelled `approximate`, which is what you planned.
+- Verified 2026-10-11:
+  - **No-token history is exactly `1 − p` of Yes-token history** at every shared timestamp, so ingest fetches only the Yes token per outcome.
+  - Points are not minute-aligned (e.g. `:16`, `:13` seconds).
+  - A whole T−48h…T+3h window (about 3,000 points) comes back in one request.
+  - Across the 59-match EPL backfill, history starts the full 48 h before kickoff. Before kickoff there are only 42 gaps longer than 5 min, and the longest is 23 min.
+- **Historical Polymarket spread cannot be measured.** Neither Gamma (`bestBid`/`bestAsk` are current only) nor CLOB exposes past quotes. Spread comparisons come from live books, and the step 6 collector records them going forward.
 
 Market fields we keep: `id, conditionId, question, groupItemTitle, sportsMarketType, version, outcomes, clobTokenIds, positionIds, negRisk, gameStartTime, bestBid, bestAsk, liquidityClob, feeSchedule, feesEnabled, clearBookOnStart, secondsDelay, orderMinSize, orderPriceMinTickSize, marketMetadata, closed`.
 

@@ -56,6 +56,7 @@ class PolymarketVenue(BaseModel):
     clob_url: str
     max_requests_per_second: float = 20
     books_batch_size: int = 100
+    prices_history_fidelity_minutes: int = 1
 
 
 class UsExCrossCheck(BaseModel):

@@ -45,6 +45,7 @@ venues:
     clob_url: https://clob.polymarket.com
     max_requests_per_second: 20
     books_batch_size: 100
+    prices_history_fidelity_minutes: 1    # ~1 point/min, not minute-aligned; Yes token only (No = 1 - p)
   odds_api:
     base_url: https://api.the-odds-api.com
     bookmakers: [pinnacle, betfair_ex_uk, williamhill, paddypower, skybet, betvictor, unibet_uk, draftkings, fanduel, betmgm]  # <=10 books = 1 credit
