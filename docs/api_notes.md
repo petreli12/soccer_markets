@@ -274,7 +274,7 @@ fee_usdc = C × feeRate × p × (1 − p)
      "outcomes":[{"name":"Aston Villa","price":3.9},{"name":"Manchester City","price":1.85},{"name":"Draw","price":3.8}]}]}]}
 ```
 - Soccer h2h is **3-way**: outcomes are the home team name, the away team name, and `"Draw"`. Outcome mapping uses `home_team`/`away_team` equality, with `"Draw"` mapping to DRAW.
-- I'll confirm the exact Draw label on the first real call, once a key is in `.env`.
+- Draw label confirmed as exactly `"Draw"` on a live call (see §5.1). Outcome order is **not** fixed, so map by name, never by position.
 - Odds API team names are a third naming convention ("Manchester City" vs Kalshi "Manchester City" vs Polymarket "Manchester City FC"). The alias table covers it.
 
 ### Implied probability and de-vig
@@ -321,7 +321,12 @@ These were approved on review and are reflected in `config.yaml`.
 ### 5.1 Odds API plan and key
 - **Free tier now (500 credits/month)**, upgrading to the 100K plan for one month before the historical backfill. Nothing in steps 2–4 depends on the key.
 - On free tier, the live collector polls sportsbooks every 30 min, and only while a matched match is inside the lookahead window (`odds.live_poll_interval_seconds`). It also stops when `x-requests-remaining` falls below `odds.credit_floor`.
-- Draw label confirmation: **pending**. On the first run with `ODDS_API_KEY` in `.env`, make one `GET /v4/sports/soccer_epl/odds?markets=h2h&bookmakers=pinnacle` call (1 credit) and record the observed outcome names here.
+- Draw label **confirmed, 2026-10-11**. One call: `GET /v4/sports/soccer_epl/odds?regions=eu&markets=h2h&bookmakers=pinnacle&oddsFormat=decimal`. It cost 1 credit; quota headers afterwards showed `x-requests-used: 1` and `x-requests-remaining: 499`.
+  - It returned 21 EPL events, every one with a Pinnacle h2h market.
+  - Across all events, the only outcome name that isn't a team is exactly `"Draw"`.
+  - Team outcome names equal `home_team` / `away_team` exactly (e.g. "Coventry City", "Newcastle United").
+  - Outcome order varies by event. For Everton vs Chelsea it was `[Chelsea, Everton, Draw]`, away team first. Mapping must use name equality, never position.
+  - Pinnacle's `last_update` was current, equal to the call time, so the "may incur a delay" note did not show up on this call.
 
 ### 5.2 Forward-fill staleness, per venue
 | Series | Staleness limit | Reason |
@@ -361,3 +366,12 @@ Per-order fee rules at the evaluated size:
 ### 5.7 us_ex cross-check (off by default)
 - `odds.us_ex_crosscheck.enabled: false`. When on, `kalshi,polymarket` are appended to the sportsbook poll's `bookmakers` list. This is free while the list stays at 10 or fewer books; each extra group of 10 books costs 1 more credit per call (2 per call at 11–20 books, ×10 for historical).
 - Those prices are stored as venue `odds_us_ex` and compared with our direct Kalshi and Polymarket prices for the same minute. They are **never** used as an edge source.
+
+### 5.8 Kalshi live snapshots vs served candles (step 6, added 2026-10-11)
+This is the live re-check of the forward-fill assumption in §5.2.
+- The collector stores every Kalshi orderbook snapshot it takes, already the plan under `data/live/venue=kalshi/date=.../`. Each row carries its poll timestamp, the best YES bid and ask derived from the book, and the top-5 depth.
+- Once a collected match settles, `pm-edge verify-kalshi-candles` fetches Kalshi's candles for the same tickers and window. For each snapshot it takes the candle whose window `(end−60 s, end]` contains it. It reports:
+  - The share of snapshots whose best bid/ask equals that candle's close, and separately whether the value lies between the candle's low and high.
+  - **The key check:** for snapshots falling in minutes with **no** candle, the share whose quote equals the forward-filled previous close. Anything below about 100% means a missing candle does not always mean "no change". Kalshi's `kalshi_historical` staleness would then move from none to a finite limit.
+  - Any snapshot quote that differs from the forward-filled value, listed with ticker, timestamp and gap length.
+- Results go into this section and drive `normalize.staleness_minutes.kalshi_historical`.

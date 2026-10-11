@@ -35,6 +35,13 @@ def test_kalshi_exact_multiple_not_bumped() -> None:
     assert kalshi_taker_fee(0.20, 100, 1.0, 0.07, 0.01) == pytest.approx(1.12)
 
 
+def test_numpy_scalars_accepted() -> None:
+    np = pytest.importorskip("numpy")
+    assert kalshi_taker_fee(np.float64(0.20), np.float64(100), 1.0, 0.07, 0.01) == pytest.approx(1.12)
+    assert polymarket_taker_fee(np.float64(0.5), 100, 0.05, 1, 5) == pytest.approx(1.25)
+    assert size_for_notional(100, np.float64(0.4)) == 250.0
+
+
 # Polymarket sports table (rate 0.05), 100 shares.
 @pytest.mark.parametrize(("price", "fee"), [(0.10, 0.45), (0.30, 1.05), (0.50, 1.25), (0.70, 1.05), (0.99, 0.0495)])
 def test_polymarket_sports_table(price: float, fee: float) -> None:

@@ -15,8 +15,11 @@ CONTRACT_STEP = Decimal("0.01")
 
 
 def _d(x: float) -> Decimal:
-    """Decimal from a float's shortest repr, so 0.07 is exactly 0.07 (avoids 1.7500000000000002)."""
-    return Decimal(repr(x))
+    """Decimal from a float's shortest repr, so 0.07 is exactly 0.07 (avoids 1.7500000000000002).
+
+    ``float()`` first: numpy 2 scalars repr as ``np.float64(0.07)``.
+    """
+    return Decimal(repr(float(x)))
 
 
 def kalshi_taker_fee(price: float, contracts: float, multiplier: float, rate: float, increment: float) -> float:
@@ -48,7 +51,7 @@ def size_for_notional(notional_usd: float, price: float) -> float:
     _check_price(price)
     if price <= 0:
         return 0.0
-    raw = Decimal(repr(notional_usd)) / Decimal(repr(price))
+    raw = _d(notional_usd) / _d(price)
     return float(raw.quantize(CONTRACT_STEP, rounding=ROUND_FLOOR))
 
 
