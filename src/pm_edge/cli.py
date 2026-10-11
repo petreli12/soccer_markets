@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import typer
 
 from pm_edge.config import Config, load_config
+from pm_edge import matching
 from pm_edge.ingest import kalshi, polymarket
 
 app = typer.Typer(no_args_is_help=True, help="Read-only research on prediction-market vs sportsbook pricing gaps.")
@@ -35,6 +36,18 @@ def backfill(
         raise typer.BadParameter(f"unknown venue(s): {sorted(unknown)}; choose from {sorted(runners)}")
     summary = {v: asyncio.run(runners[v](cfg, league, days)) for v in venue}
     typer.echo(json.dumps(summary, indent=2))
+
+
+@app.command()
+def match(
+    league: list[str] = typer.Option(None, help="League(s) to match; default: every enabled league"),
+) -> None:
+    """Pair ingested events across venues; writes data/processed/matches_league=*.parquet and the review file."""
+    cfg = load_config()
+    leagues = league or [name for name, lc in cfg.leagues.items() if lc.enabled]
+    summary = matching.run(cfg, leagues)
+    typer.echo(json.dumps(summary, indent=2, default=str))
+    typer.echo(f"review file: {cfg.matching.review_path}")
 
 
 @app.command("verify-kalshi-gaps")

@@ -64,8 +64,13 @@ def parse_ts(value: str | None) -> datetime | None:
 
 
 def split_title(title: str) -> tuple[str, str] | None:
-    """Split an event title of the form ``"{Home} vs {Away}"``."""
-    parts = _TITLE_SPLIT.split(title.strip())
+    """Split an event title of the form ``"{Home} vs {Away}"``.
+
+    Some UCL titles carry a market-type suffix (``"Lyon vs Fenerbahce: Regulation Time Moneyline"``);
+    everything after the first colon is dropped. All Kalshi soccer game markets settle on 90 minutes
+    plus stoppage time, with or without the suffix (docs/api_notes.md §1).
+    """
+    parts = _TITLE_SPLIT.split(title.split(":", 1)[0].strip())
     if len(parts) != 2 or not all(parts):
         return None
     return parts[0].strip(), parts[1].strip()

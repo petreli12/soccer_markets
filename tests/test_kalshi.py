@@ -79,6 +79,15 @@ def test_missing_milestone_is_not_guessed_from_expiration() -> None:
     assert "kickoff" in out.reason
 
 
+def test_regulation_time_title_suffix_is_stripped() -> None:
+    m = parse_event(
+        _event(title="Manchester United vs Bournemouth: Regulation Time Moneyline"), MARKETS, MILESTONE, "EPL", FEE
+    )
+    assert isinstance(m, VenueMatch)
+    assert m.away_name == "Bournemouth"
+    assert m.contracts[Outcome.AWAY].market_id.endswith("-BOU")
+
+
 def test_bad_title_goes_to_review() -> None:
     out = parse_event(_event(title="Manchester United v. Bournemouth odds"), MARKETS, MILESTONE, "EPL", FEE)
     assert isinstance(out, UnmappedEvent)

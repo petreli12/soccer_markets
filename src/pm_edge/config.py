@@ -150,6 +150,7 @@ class Analysis(BaseModel):
     reference_notional_usd: float = 100
     sharp: SharpConfig = Field(default_factory=SharpConfig)
     time_buckets: list[TimeBucket]
+    focus_windows: list[TimeBucket] = Field(default_factory=list)
     headline_bucket: str = "2h-kickoff"
     exclude_inplay_from_decision: bool = True
     pm_history_semantics: PmHistorySemantics = Field(default_factory=PmHistorySemantics)

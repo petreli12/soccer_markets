@@ -104,6 +104,8 @@ analysis:
     - {name: "24h-2h", min_minutes: 120, max_minutes: 1440}
     - {name: "2h-kickoff", min_minutes: 0, max_minutes: 120}
     - {name: "in-play", min_minutes: null, max_minutes: 0}
+  focus_windows:                           # may overlap time_buckets; reported separately
+    - {name: lineup, min_minutes: 45, max_minutes: 75}   # EPL lineups are announced ~60 min before kickoff
   headline_bucket: "2h-kickoff"
   exclude_inplay_from_decision: true
   pm_history_semantics:

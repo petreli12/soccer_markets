@@ -322,6 +322,12 @@ Live collector: polling both leagues every 5 min only while a match is inside th
    - Polymarket neg-risk conversion is not modelled.
 10. **Polymarket fee exponent** isn't documented. I read it per market and use the generalised formula, which reduces to the documented one at exponent 1.
 11. **Polymarket wipes the book at kickoff** (`clearBookOnStart`) and adds an in-play order delay. Both matter for interpreting the "in-play" bucket and the 2-minute human-reaction criterion.
+12. **Settlement equivalence (verified from rules text, 2026-10-11).** Both venues settle the match result on **90 minutes plus stoppage time, excluding extra time and penalties**. That includes UCL qualifying second legs, where Kalshi titles carry a ": Regulation Time Moneyline" suffix that ingest strips. Sportsbook h2h for soccer uses the same 90-minute convention. Two tail differences remain and are not modelled:
+    - **Postponement:** Polymarket stays open until the game is played. Kalshi's rules refer to the game "originally scheduled" for a date.
+    - **Cancellation:** if a game is cancelled outright, Polymarket resolves the Draw market to Yes.
+
+    A cross-venue pair can therefore lose on both legs in a postponement or cancellation. This is a rare tail risk; the report should mention it.
+13. **Kalshi abbreviations are not unique.** `CEL` is used for both Celtic and NK Celje in UCL. Matching never uses abbreviations; it uses names and the alias table only.
 
 ---
 
@@ -373,6 +379,7 @@ Per-order fee rules at the evaluated size:
 - Buckets: `>24h`, `24h–2h`, `2h–kickoff` (**headline**), and `in-play`.
 - In-play rows are tagged and **excluded from the PASS/FAIL decision box**. They get a separate report section.
 - The bucket boundaries are configurable.
+- **Lineup window** (added 2026-10-11): `analysis.focus_windows` → `lineup`, 75 to 45 minutes before kickoff. EPL lineups are announced about 60 minutes before kickoff. The window overlaps the `2h–kickoff` bucket and is reported separately, never instead of it. Cross-venue gaps and venue lag after price moves are both broken out for this window.
 
 ### 5.7 us_ex cross-check (off by default)
 - `odds.us_ex_crosscheck.enabled: false`. When on, `kalshi,polymarket` are appended to the sportsbook poll's `bookmakers` list. This is free while the list stays at 10 or fewer books; each extra group of 10 books costs 1 more credit per call (2 per call at 11–20 books, ×10 for historical).
@@ -386,3 +393,11 @@ This is the live re-check of the forward-fill assumption in §5.2.
   - **The key check:** for snapshots falling in minutes with **no** candle, the share whose quote equals the forward-filled previous close. Anything below about 100% means a missing candle does not always mean "no change". Kalshi's `kalshi_historical` staleness would then move from none to a finite limit.
   - Any snapshot quote that differs from the forward-filled value, listed with ticker, timestamp and gap length.
 - Results go into this section and drive `normalize.staleness_minutes.kalshi_historical`.
+
+### 5.9 Matching (step 4)
+- `data/team_aliases.csv` (columns `alias, canonical, note`) is the only versioned file under `data/`. It covers every variant seen on Kalshi, Polymarket and the Odds API for EPL and UCL: 58 canonical teams.
+- **Lookup normalisation:** case-folded; accents stripped, with ø→o; apostrophes and backticks removed; `&` becomes "and"; other punctuation becomes a space. So `Be`er Sheva`, `Be'er Sheva` and `Beer Sheva` are the same key.
+- **Unknown names:** these go to rapidfuzz `token_sort_ratio`. A score of 90 or more is accepted **and** written to the review file as `fuzzy_accepted`. A score of 80–90 is written as a suggestion and the event is left unmatched. Below 80, the event is recorded as unresolved. `WRatio` is not used, because its partial matching inflates scores like "Inter" against "Inter Milan B".
+- **Pairing:** events pair when the canonical home and away teams are identical and kickoffs are within 120 min. `match_id = {league}_{kickoff date UTC}_{home}_{away}`, using the earliest kickoff in the pair.
+- **Review kinds:** `unresolved_team`, `fuzzy_accepted`, `home_away_swapped` (never paired), `kickoff_mismatch` (including same-day kickoffs too far apart), `duplicate_venue_event`, `unpaired`.
+- **Result, 2026-10-11:** EPL 59/59 and UCL 32/32 paired on both venues, with all names resolved by exact alias. Kickoffs are identical, and settled results agree outcome by outcome in all 91 matches. The review file is empty.

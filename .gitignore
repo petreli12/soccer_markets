@@ -3,7 +3,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/
+data/*
+!data/team_aliases.csv
 reports/
 notebooks/output/
 *.egg-info/
