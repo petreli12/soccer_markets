@@ -1,0 +1,130 @@
+# pm-edge-soccer configuration. Secrets go in .env, never here.
+# See docs/api_notes.md for the source of every venue-specific value.
+
+leagues:
+  EPL:
+    enabled: true
+    sport: soccer
+    outcomes: [HOME, DRAW, AWAY]          # NBA later: [HOME, AWAY]
+    kalshi:
+      series_ticker: KXEPLGAME
+    polymarket:
+      series_id: "10188"
+      sport: epl
+      market_type: moneyline
+    odds_api:
+      sport_key: soccer_epl
+  UCL:
+    enabled: true
+    sport: soccer
+    outcomes: [HOME, DRAW, AWAY]
+    kalshi:
+      series_ticker: KXUCLGAME
+    polymarket:
+      series_id: "10204"
+      sport: ucl
+      market_type: moneyline
+    odds_api:
+      sport_key: soccer_uefa_champs_league
+  # NBA:
+  #   enabled: false
+  #   sport: basketball
+  #   outcomes: [HOME, AWAY]
+  #   kalshi: {series_ticker: KXNBAGAME}
+  #   polymarket: {series_id: "", sport: nba, market_type: moneyline}
+  #   odds_api: {sport_key: basketball_nba}
+
+venues:
+  kalshi:
+    base_url: https://external-api.kalshi.com/trade-api/v2
+    max_requests_per_second: 6            # unauthenticated limit unpublished; evenly spaced 10/s drew occasional 429s
+    max_candles_per_request: 5000         # verified server-side limit
+    orderbook_batch_size: 100
+  polymarket:
+    gamma_url: https://gamma-api.polymarket.com
+    clob_url: https://clob.polymarket.com
+    max_requests_per_second: 20
+    books_batch_size: 100
+  odds_api:
+    base_url: https://api.the-odds-api.com
+    bookmakers: [pinnacle, betfair_ex_uk, williamhill, paddypower, skybet, betvictor, unibet_uk, draftkings, fanduel, betmgm]  # <=10 books = 1 credit
+    sharp_bookmaker: pinnacle
+    odds_format: decimal
+    credit_floor: 25                      # stop calling when x-requests-remaining drops below this
+    live_poll_interval_seconds: 1800      # free tier (500/mo); drop to 300 on the 100K plan
+    us_ex_crosscheck:
+      enabled: false                      # pull kalshi/polymarket via Odds API us_ex as a cross-check
+      bookmakers: [kalshi, polymarket]
+
+fees:
+  kalshi:
+    formula: quadratic                    # fee = round_up(M * rate * C * P * (1 - P)) per order
+    taker_rate: 0.07
+    default_multiplier: 1.0               # overridden by series fee_multiplier / event override
+    rounding_increment_usd: 0.01          # 0.0001 for direct members; 0.01 is conservative
+  polymarket:
+    formula: quadratic_exponent           # fee = round(C * rate * (p * (1 - p)) ** exponent, decimals)
+    default_taker_rate: 0.05              # sports; overridden by per-market feeSchedule.rate
+    default_exponent: 1.0                 # overridden by per-market feeSchedule.exponent
+    rounding_decimals: 5
+    apply_taker_rebate: false             # conservative: ignore the taker rebate program
+
+devig:
+  method: power                           # power | multiplicative
+  fallback: multiplicative
+  power_max_iter: 100
+  power_tolerance: 1.0e-10
+
+matching:
+  fuzzy_suggest_threshold: 80             # fuzzy candidates >= this are written to the review file as suggestions
+  fuzzy_auto_accept_threshold: 90         # fuzzy matches below this are never accepted without manual confirmation
+  kickoff_tolerance_minutes: 120
+  team_aliases_path: data/team_aliases.csv
+  review_path: data/unmatched_review.csv
+
+normalize:
+  resample: 1min
+  window_before_kickoff_hours: 48
+  window_after_kickoff_hours: 3
+  staleness_minutes:                      # null = no staleness limit (forward fill within the window)
+    kalshi_historical: null               # verified: missing candle == no change (api_notes §1)
+    kalshi_live: 5
+    polymarket: 5
+    sportsbook: 5
+
+analysis:
+  gap_thresholds: [0.01, 0.02, 0.03, 0.05]   # net of fees
+  reference_notional_usd: 100
+  sharp:
+    max_pinnacle_age_minutes: 5
+    divergence_threshold: 0.03
+  time_buckets:                            # minutes_to_kickoff boundaries; in-play is < 0
+    - {name: ">24h", min_minutes: 1440, max_minutes: null}
+    - {name: "24h-2h", min_minutes: 120, max_minutes: 1440}
+    - {name: "2h-kickoff", min_minutes: 0, max_minutes: 120}
+    - {name: "in-play", min_minutes: null, max_minutes: 0}
+  headline_bucket: "2h-kickoff"
+  exclude_inplay_from_decision: true
+  pm_history_semantics:
+    min_matched_minutes: 500              # minutes of live data needed before labelling the basis
+    match_tolerance: 0.0005
+
+collector:
+  poll_interval_seconds: 20
+  lookahead_hours: 48
+  inplay_tail_hours: 3                    # keep polling this long after kickoff
+  orderbook_depth: 5
+  live_dir: data/live
+
+decision:
+  min_executable_episodes_per_matchday: 3
+  executable_threshold: 0.02
+  min_median_episode_minutes: 2
+  min_median_executable_usd: 200
+  sharp_divergence_threshold: 0.03
+  min_share_matches_with_sharp_divergence: 0.20
+
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  report_path: reports/edge_report.html

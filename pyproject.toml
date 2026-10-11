@@ -1,0 +1,43 @@
+[project]
+name = "pm-edge-soccer"
+version = "0.1.0"
+description = "Read-only research tool measuring pricing gaps between prediction markets and sportsbooks on soccer."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "httpx>=0.27",
+    "tenacity>=8.5",
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+    "duckdb>=1.1",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "pyyaml>=6.0",
+    "rapidfuzz>=3.9",
+    "typer>=0.12",
+    "plotly>=5.24",
+]
+
+[project.scripts]
+pm-edge = "pm_edge.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pm_edge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: hits live public APIs (skip with -m \"not live\")",
+]
