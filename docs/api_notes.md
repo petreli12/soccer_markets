@@ -408,3 +408,28 @@ This is the live re-check of the forward-fill assumption in §5.2.
 - **Pairing:** events pair when the canonical home and away teams are identical and kickoffs are within 120 min. `match_id = {league}_{kickoff date UTC}_{home}_{away}`, using the earliest kickoff in the pair.
 - **Review kinds:** `unresolved_team`, `fuzzy_accepted`, `home_away_swapped` (never paired), `kickoff_mismatch` (including same-day kickoffs too far apart), `duplicate_venue_event`, `unpaired`.
 - **Result, 2026-10-11:** EPL 59/59 and UCL 32/32 paired on both venues, with all names resolved by exact alias. Kickoffs are identical, and settled results agree outcome by outcome in all 91 matches. The review file is empty.
+
+### 5.11 Public trade history (maker backtest, 2026-10-19)
+**Kalshi `GET /markets/trades`** ([docs](https://docs.kalshi.com/api-reference/market/get-trades)):
+- **No auth:** the OpenAPI spec has `security: []`, and calls were verified without any headers.
+- **Params:**
+  - `ticker`, `min_ts` and `max_ts` (unix seconds);
+  - `limit` (1–1000, default 100), plus `cursor` (an empty cursor means the last page);
+  - `is_block_trade` (block trades are included by default).
+- **Fields:** `trade_id`, `ticker`, `count_fp` (2 dp, fractional contracts allowed), `yes_price_dollars`, `no_price_dollars`, `taker_outcome_side` (yes/no), `taker_book_side` (bid/ask), `created_time` (µs), `is_block_trade`. `taker_side` is deprecated.
+- **Older trades:** trades created before `GET /historical/cutoff` → `trades_created_ts` (2026-08-20T00:00Z on 2026-10-19) are **only** on `GET /historical/trades`, which takes the same params. `/markets/trades` returns 0 for them.
+- **Volume:** the backfill of 129 matches × 3 markets over T−24h..T was 612,741 trades, done in about 4 min at 6 rps. One market's final 3 h was 307 trades on one page.
+
+**Kalshi maker fee:**
+- Both series are still `fee_type: quadratic_with_maker_fees` with `fee_multiplier: 1` (`GET /series/{ticker}`, 2026-10-19). `GET /series/fee_changes?series_ticker=KXEPLGAME` returns an empty list, so no change is scheduled.
+- The rate is 0.0175 from the 7 Jul 2026 fee schedule (§1). The PDF URL now serves an HTML page, so it couldn't be re-read on 2026-10-19.
+- Per [fee rounding](https://docs.kalshi.com/getting_started/fee_rounding.md), the fee accumulator runs per order across fills, so the total converges to a single fill of the filled quantity. The backtest applies round_up(0.0175 × F × P(1−P)) once per order.
+
+**Polymarket data-api `GET /trades`** ([docs](https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets)):
+- **No auth.** `market` (comma-separated condition ids) or `eventId` (all markets of an event).
+- **Window:** `start`/`end` (epoch seconds).
+- **Paging:** `limit` ≤ 10,000, and values above that are clamped. `offset` ≤ 10,000; past that the request is rejected with 400, so page inside narrower `start`/`end` windows.
+- **Other:** `takerOnly` defaults to true, giving one row per trade.
+- **Volume:** 189,881 trades for the 129 events over T−24h..T, with no window needing a split.
+
+**Book depth is not public historically.** Kalshi candles carry bid/ask prices but no sizes, so queue position in the maker backtest is a scanned assumption (`notebooks/maker_backtest.py`). Live best-bid sizes from collector-lite are 10k–150k contracts in the final 3 h, based on one match so far.
