@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from kalshi_overround_eda import minute_grid  # noqa: E402
 
 from pm_edge.config import get_config  # noqa: E402
-from pm_edge.fees import kalshi_taker_fee, size_for_notional  # noqa: E402
+from pm_edge.fees import kalshi_taker_fee, polymarket_taker_fee, size_for_notional  # noqa: E402
 from pm_edge.http import ApiClient  # noqa: E402
 
 cfg = get_config()
@@ -181,12 +181,14 @@ async def backfill_polymarket(p: pd.DataFrame, refresh: bool) -> dict[str, int]:
 
 # -- simulation --------------------------------------------------------------------------------
 
-def maker_fills(ts: np.ndarray, px: np.ndarray, qty: np.ndarray, price: float, queue: float, n: float
-                ) -> list[tuple[int, float]]:
+def maker_fills(ts: np.ndarray, px: np.ndarray, qty: np.ndarray, price: float, queue: float, n: float,
+                existing_level: bool = True) -> list[tuple[int, float]]:
     """(trade index, contracts filled) for a resting bid of ``n`` at ``price`` behind ``queue``.
 
-    Trades (time-ordered) printed at or below ``price`` consume the queue, then our order. A print
-    strictly below ``price`` means the level was swept: everything left fills on that trade.
+    Trades (time-ordered) printed at or below ``price`` consume the queue, then our order. At an
+    ``existing_level`` (the historical best bid), a print strictly below ``price`` means that level
+    was swept, so everything left fills on that trade. A new level inside the spread did not exist
+    historically: a print below it would have hit our better bid first, but only for its own size.
     """
     fills, ahead, left = [], queue, n
     for i in range(len(ts)):
@@ -194,7 +196,7 @@ def maker_fills(ts: np.ndarray, px: np.ndarray, qty: np.ndarray, price: float, q
             break
         if px[i] > price + 1e-9:
             continue
-        if px[i] < price - 1e-9:
+        if existing_level and px[i] < price - 1e-9:
             fills.append((i, left))
             break
         q = qty[i]
@@ -273,10 +275,10 @@ def simulate(p: pd.DataFrame, queues: dict[str, dict[int, float]]) -> pd.DataFra
                         if math.isnan(q):
                             continue
                         for strat in ("A", "B"):
-                            price, queue = b0, q
+                            price, queue, existing = b0, q, True
                             if strat == "B" and spread >= 0.02 - 1e-9:
-                                price, queue = round(b0 + TICK, 4), 0.0
-                            fills = maker_fills(tts, tpx, tq, price, queue, n)
+                                price, queue, existing = round(b0 + TICK, 4), 0.0, False
+                            fills = maker_fills(tts, tpx, tq, price, queue, n, existing)
                             filled = sum(f for _, f in fills)
                             rest = max(n - filled, 0.0)
                             cost = price * filled + fee(MAKER_RATE, price, filled) + a_fb * rest + fee(TAKER_RATE, a_fb, rest)
@@ -299,6 +301,104 @@ def simulate(p: pd.DataFrame, queues: dict[str, dict[int, float]]) -> pd.DataFra
                                  "filled_frac": 1.0, "full_fill": True, "cpc": taker_cpc, "savings_c": 0.0,
                                  "savings_pct_stake": 0.0})
     return pd.DataFrame(rows)
+
+
+# -- Polymarket variant ------------------------------------------------------------------------
+
+PM_IMPROVE = 0.001  # Polymarket tick
+
+
+def live_pm_quotes() -> tuple[dict[tuple[str, str], pd.DataFrame], float]:
+    """Live YES bid/ask per (match_id, outcome) from collector-lite, and the median half-spread."""
+    p = cfg.resolve(cfg.collector_lite.live_dir) / "venue=polymarket"
+    if not p.exists():
+        return {}, 0.005
+    d = pd.read_parquet(p, columns=["ts_poll", "match_id", "outcome", "best_yes_bid", "best_yes_ask"]).dropna()
+    half = float(((d["best_yes_ask"] - d["best_yes_bid"]) / 2).median()) if len(d) else 0.005
+    return {k: g.sort_values("ts_poll") for k, g in d.groupby(["match_id", "outcome"])}, round(half, 4)
+
+
+def pm_quote(live: pd.DataFrame | None, hist_ts: np.ndarray, hist_px: np.ndarray, t: np.datetime64,
+             half: float) -> tuple[float, float, str]:
+    """(bid, ask, source) at ``t``: a live snapshot within 30 s, else history midpoint -/+ half-spread."""
+    if live is not None:
+        lt = live["ts_poll"].dt.tz_convert(None).to_numpy(dtype="datetime64[ns]")
+        i = np.searchsorted(lt, t)
+        for j in (i - 1, i):
+            if 0 <= j < len(lt) and abs(lt[j] - t) <= np.timedelta64(30, "s"):
+                return float(live["best_yes_bid"].iloc[j]), float(live["best_yes_ask"].iloc[j]), "live"
+    mid = asof(hist_ts, hist_px, t)
+    return round(mid - half, 3), round(mid + half, 3), "history"
+
+
+def pm_fee(price: float, n: float, rate: float, exponent: float) -> float:
+    return polymarket_taker_fee(price, round(n, 2), rate, exponent, cfg.fees.polymarket.rounding_decimals) if n > 1e-9 else 0.0
+
+
+def simulate_pm(p: pd.DataFrame) -> tuple[pd.DataFrame, float]:
+    live, half = live_pm_quotes()
+    rows = []
+    for lg in LEAGUES:
+        pm = pd.read_parquet(RAW / "polymarket" / f"matches_league={lg}.parquet")
+        for r in p[p["league"] == lg].itertuples():
+            hf = RAW / "polymarket" / "history" / f"league={lg}" / f"{r.polymarket}.parquet"
+            tf = RAW / "polymarket" / "trades" / f"league={lg}" / f"{r.polymarket}.parquet"
+            if not hf.exists() or not tf.exists():
+                continue
+            hist, trades = pd.read_parquet(hf), pd.read_parquet(tf)
+            if hist.empty or trades.empty:
+                continue
+            fees = pm[pm["venue_event_id"].astype(str) == str(r.polymarket)].set_index("outcome")
+            ko = np.datetime64(r.kickoff_utc.tz_convert(None), "ns")
+            fb_t = ko - np.timedelta64(FALLBACK_MIN, "m")
+            hs = {o: hist[hist["outcome"] == o].sort_values("ts") for o in OUTCOMES}
+            hts = {o: h["ts"].dt.tz_convert(None).to_numpy(dtype="datetime64[ns]") for o, h in hs.items()}
+            hpx = {o: h["price"].to_numpy() for o, h in hs.items()}
+            if any(len(v) == 0 for v in hts.values()) or not set(OUTCOMES) <= set(fees.index):
+                continue
+            for e in ENTRY_MIN:
+                t0 = ko - np.timedelta64(e, "m")
+                mids0 = {o: asof(hts[o], hpx[o], t0) for o in OUTCOMES}
+                fav = "HOME" if mids0["HOME"] >= mids0["AWAY"] else "AWAY"
+                for o in OUTCOMES:
+                    lv = live.get((r.match_id, o))
+                    b0, a0, src = pm_quote(lv, hts[o], hpx[o], t0, half)
+                    _, a_fb, _ = pm_quote(lv, hts[o], hpx[o], fb_t, half)
+                    q = round(b0 + PM_IMPROVE, 3)
+                    if not (0 < b0 < q < a0 < 1) or not (0 < a_fb < 1):
+                        continue
+                    rate, expo = float(fees.loc[o, "fee_rate"]), float(fees.loc[o, "fee_exponent"])
+                    n = size_for_notional(NOTIONAL, a0)
+                    taker_cpc = (a0 * n + pm_fee(a0, n, rate, expo)) / n
+                    tw = trades[(trades["outcome"] == o) & (trades["ts"] > pd.Timestamp(t0, tz="UTC"))
+                                & (trades["ts"] <= pd.Timestamp(fb_t, tz="UTC"))].sort_values("ts")
+                    yes_px = np.where(tw["token_outcome"] == "Yes", tw["price"], 1 - tw["price"])
+                    tts = tw["ts"].dt.tz_convert(None).to_numpy(dtype="datetime64[ns]")
+                    tq = tw["size"].to_numpy()
+                    role = "draw" if o == "DRAW" else ("favourite" if o == fav else "underdog")
+                    mid_ts, mid_px = hts[o], hpx[o]
+                    base = {"match_id": r.match_id, "league": lg, "entry_min": e, "outcome": o, "role": role,
+                            "n": n, "bid0": b0, "ask0": a0, "quote_src": src, "ask_fb": a_fb, "taker_cpc": taker_cpc,
+                            "trades_window": len(tw), "volume_window": float(tq.sum())}
+                    first = np.flatnonzero(yes_px <= q + 1e-9)
+                    variants = {
+                        "P (any print fills all)": [(int(first[0]), n)] if len(first) else [],
+                        "P (size-limited)": maker_fills(tts, yes_px, tq, q, 0.0, n, existing_level=False),
+                    }
+                    for strat, fills in variants.items():
+                        filled = sum(f for _, f in fills)
+                        rest = max(n - filled, 0.0)
+                        cost = q * filled + a_fb * rest + pm_fee(a_fb, rest, rate, expo)
+                        mk = {}
+                        if filled > 1e-9:
+                            for h in MARKOUT_MIN:
+                                mk[f"mo{h}_c"] = sum(f * (asof(mid_ts, mid_px, min(tts[i] + np.timedelta64(h, "m"), ko)) - q)
+                                                     for i, f in fills) / filled * 100
+                            mk["moKO_c"] = (asof(mid_ts, mid_px, ko) - q) * 100
+                        rows.append({**base, "strategy": strat, "post_px": q, "filled_frac": filled / n,
+                                     "full_fill": rest <= 1e-9, "cpc": cost / n, "savings_c": (taker_cpc - cost / n) * 100,
+                                     "savings_pct_stake": (taker_cpc * n - cost) / NOTIONAL * 100, **mk})
+    return pd.DataFrame(rows), half
 
 
 # -- reporting ---------------------------------------------------------------------------------
@@ -397,6 +497,25 @@ def main() -> None:
         f"save >=1c/contract net under {main_q}; at Q=0 it {'does' if max(s.loc[('Q=0', 'A'), 'savings_c'], s.loc[('Q=0', 'B'), 'savings_c']) >= 1 else 'does not'}.",
     ]
     print("\n".join(lines))
+
+    pmdf, half = simulate_pm(p)
+    if pmdf.empty:
+        print("\nPolymarket variant: no data")
+        return
+    pmdf.to_csv(out / "maker_backtest_polymarket_orders.csv", index=False)
+    src = pmdf.drop_duplicates(["match_id", "entry_min", "outcome"])["quote_src"].value_counts().to_dict()
+    print(f"\n=== APPROXIMATE: Polymarket maker P (YES bid {PM_IMPROVE * 100:.1f}c above best bid, alone at the front; "
+          f"maker fee 0, rebates ignored) ===")
+    print(f"quotes: {src}; historical bid/ask = /prices-history midpoint -/+ {half * 100:.2f}c (median live half-spread)")
+    print(summary_table(pmdf, ["strategy"]).round(3).to_string())
+    for by in ("role", "entry_min"):
+        print(f"--- by {by} ---")
+        print(summary_table(pmdf, ["strategy", by]).round(3).to_string())
+    ps = summary_table(pmdf, ["strategy"])
+    for name in ps.index:
+        print(f"  {name}: full-fill {ps.loc[name, 'full_fill_rate']:.0%}, net {ps.loc[name, 'savings_c']:+.2f}c/contract "
+              f"({ps.loc[name, 'savings_pct']:+.2f}% of stake), markout +5m {ps.loc[name, 'mo5_c']:+.2f}c, KO {ps.loc[name, 'moKO_c']:+.2f}c "
+              f"(no move = +{(half - PM_IMPROVE) * 100:.1f}c)")
 
 
 if __name__ == "__main__":

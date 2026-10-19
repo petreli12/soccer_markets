@@ -433,3 +433,29 @@ This is the live re-check of the forward-fill assumption in §5.2.
 - **Volume:** 189,881 trades for the 129 events over T−24h..T, with no window needing a split.
 
 **Book depth is not public historically.** Kalshi candles carry bid/ask prices but no sizes, so queue position in the maker backtest is a scanned assumption (`notebooks/maker_backtest.py`). Live best-bid sizes from collector-lite are 10k–150k contracts in the final 3 h, based on one match so far.
+
+### 5.12 Polymarket US (docs only, 2026-10-19; no data pulled)
+Polymarket US is the CFTC-regulated US exchange. It is separate from the international Polymarket CLOB used everywhere else in this repo. Everything below comes from [docs.polymarket.us](https://docs.polymarket.us/llms.txt); none of its endpoints were called.
+- **EPL/UCL match markets:**
+  - **Soccer 3-way markets: yes.** The sports schema has `soccer_team_full_time_winner`, a 3-way moneyline with a `drawable_outcome` (home / draw / away), plus spreads, totals and props.
+  - **EPL: yes, by example.** The Sports FAQ uses EPL examples ("Will Man City vs Arsenal end in a draw?") and says league and group matches settle on regulation time.
+  - **UCL: not confirmed.** The docs never name the Champions League. Check later with the public `GET /v2/leagues/{slug}/events` before relying on it.
+- **Fees:**
+  - **Formula:** fee = Θ × C × p × (1 − p).
+  - **Taker:** Θ = 0.0695 for sports (Table Tennis 0.10). That is about 0.99× the Kalshi taker rate before rounding.
+  - **Taker rebates:** 0–30%, tiered by prior-month taker volume.
+  - **Makers pay no fee.** Maker rebates became tiered on 2026-10-19 at 1pm ET, replacing the flat Θ = −0.0125:
+    - Tier 1 (under $10M prior-month maker volume): none;
+    - higher tiers: −0.0035, −0.0070 and −0.0104.
+  - A new account sits in Tier 1, so it gets no rebate.
+- **Tick size:**
+  - It is set per instrument by `orderPriceMinTickSize`; the docs say not to assume one.
+  - Standard is $0.01. Some markets are decimalized to $0.005 (World Cup spreads/totals/to-advance, NBA Finals, Wimbledon).
+  - **The 0.1c inside-the-spread improvement used by the international maker test (tick 0.001) is not possible here.** The minimum improvement is 0.5c or 1c.
+- **Public market data: yes for REST.** The auth page says "public endpoints like market data and events don't need" an API key. Docs examples use `https://api.polymarket.us`. Endpoints:
+  - `/v1/markets`, `/v1/market/slug/{slug}`;
+  - `/v1/markets/{slug}/book` and `/bbo`;
+  - `/v1/price-history`;
+  - `/v2/leagues/{slug}/events`.
+- **Auth is required** for trading, portfolio and WebSockets (Ed25519-signed `X-PM-*` headers). This tool would use only the public REST endpoints.
+- **Limits:** 25 requests/s per IP, shared. Market data is retained for **45 days**, so any history backfill must run within that window.
