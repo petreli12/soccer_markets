@@ -38,14 +38,37 @@ pm-edge thin-scan --league UCL --kickoff-within-hours 36   # Polymarket non-mone
 - **Logs:** `data/live/collector.log`, with a heartbeat every 10 min.
 - **Stopping:** SIGTERM or Ctrl-C flushes buffered rows before exiting.
 
-macOS, keeping the machine awake while it runs (lid-close sleep still stops it):
+macOS: run it as a launchd agent. A `nohup` job started from an IDE or agent terminal can be killed along with that terminal; that happened 11–19 Oct and the matchdays were missed. Save this as `~/Library/LaunchAgents/com.pmedge.collector.plist`, replacing `REPO` with the absolute repo path:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.pmedge.collector</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string><string>-i</string>
+        <string>REPO/.venv/bin/pm-edge</string><string>collect-lite</string>
+    </array>
+    <key>WorkingDirectory</key><string>REPO</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>StandardOutPath</key><string>REPO/data/live/collector.stdout</string>
+    <key>StandardErrorPath</key><string>REPO/data/live/collector.stdout</string>
+</dict>
+</plist>
+```
 
 ```bash
-source .venv/bin/activate
-nohup caffeinate -i pm-edge collect-lite >> data/live/collector.stdout 2>&1 &
-tail -f data/live/collector.log          # watch
-pkill -TERM -f "pm-edge collect-lite"   # stop
+launchctl load -w ~/Library/LaunchAgents/com.pmedge.collector.plist     # start now and at every login
+launchctl list | grep pmedge                                            # "<pid> <last exit> com.pmedge.collector"
+tail -f data/live/collector.log                                         # heartbeat every 10 min
+launchctl unload -w ~/Library/LaunchAgents/com.pmedge.collector.plist   # stop (SIGTERM -> final flush)
 ```
+
+`KeepAlive` with `SuccessfulExit=false` restarts it after a crash. `caffeinate -i` stops idle sleep, but closing the lid still sleeps the Mac. Check it is still running a few minutes after any restart.
 
 ### On a small Ubuntu VPS
 
@@ -111,7 +134,7 @@ sudo systemctl stop pm-edge-collector           # SIGTERM -> final flush, exits 
 
 All timestamps are UTC, so the VPS timezone doesn't matter. The clock does: `timedatectl` should show `System clock synchronized: yes` (Ubuntu's default `systemd-timesyncd` handles this).
 
-**5. Switching from the Mac.** Run only one collector at a time. Two collectors would write duplicate rows and spend Odds API credits twice. Stop the Mac collector (`pkill -TERM -f "pm-edge collect-lite"`) before starting the VPS one.
+**5. Switching from the Mac.** Run only one collector at a time. Two collectors would write duplicate rows and spend Odds API credits twice. Stop the Mac collector (`launchctl unload -w ~/Library/LaunchAgents/com.pmedge.collector.plist`) before starting the VPS one.
 
 **6. Copying the parquet data back** (run on the Mac, from the repo root):
 

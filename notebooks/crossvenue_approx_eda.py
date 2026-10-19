@@ -30,6 +30,7 @@ Run:  source .venv/bin/activate && python notebooks/crossvenue_approx_eda.py
 
 from __future__ import annotations
 
+import argparse
 import math
 import sys
 from functools import lru_cache
@@ -40,13 +41,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 from kalshi_overround_eda import minute_grid  # noqa: E402
-from step3_crossvenue_check import provisional_join  # noqa: E402
-
 from pm_edge.config import get_config  # noqa: E402
 from pm_edge.fees import FeeModel  # noqa: E402
 from pm_edge.models import FeeParams, Venue  # noqa: E402
 
 LEAGUE = "EPL"
+KICKOFF_FROM: pd.Timestamp | None = None
 OUTCOMES = ["HOME", "DRAW", "AWAY"]
 HALF_SPREADS = [0.005, 0.010, 0.020]
 BUCKETS = [(1440, 2880, "48h-24h"), (120, 1440, "24h-2h"), (60, 120, "2h-60m"), (0, 60, "60m-KO")]
@@ -89,14 +89,29 @@ def bucket_of(mtk: pd.Series) -> pd.Series:
     return out
 
 
+def matched_pairs(cfg) -> pd.DataFrame:
+    """Kalshi/Polymarket event pairs from ``pm-edge match`` (data/processed), one row per match."""
+    m = pd.read_parquet(cfg.resolve(cfg.paths.processed_dir) / f"matches_league={LEAGUE}.parquet")
+    w = m.pivot_table(index=["match_id", "kickoff_utc"], columns="venue", values=["venue_event_id", "venue_title"],
+                      aggfunc="first").dropna()
+    return pd.DataFrame({
+        "match_id": w.index.get_level_values("match_id"),
+        "kickoff_utc": w.index.get_level_values("kickoff_utc"),
+        "kalshi_event": w[("venue_event_id", "kalshi")].to_numpy(),
+        "pm_event": w[("venue_event_id", "polymarket")].to_numpy(),
+        "kalshi_title": w[("venue_title", "kalshi")].to_numpy(),
+    })
+
+
 def build_minutes(cfg) -> pd.DataFrame:
     """Long frame: one row per (match, outcome, pre-kickoff minute) with both venues' prices."""
     raw = cfg.resolve(cfg.paths.raw_dir)
     k = pd.read_parquet(raw / "kalshi" / f"matches_league={LEAGUE}.parquet")
     p = pd.read_parquet(raw / "polymarket" / f"matches_league={LEAGUE}.parquet")
     kc = pd.concat(pd.read_parquet(f) for f in (raw / "kalshi" / "candles" / f"league={LEAGUE}").glob("*.parquet"))
-    joined, _ = provisional_join(k, p, cfg.matching.kickoff_tolerance_minutes)
-    joined = joined[joined["status"] == "matched"]
+    joined = matched_pairs(cfg)
+    if KICKOFF_FROM is not None:
+        joined = joined[joined["kickoff_utc"] >= KICKOFF_FROM]
     stale = pd.Timedelta(minutes=cfg.normalize.staleness_minutes.polymarket)
 
     frames = []
@@ -248,7 +263,18 @@ def lag_analysis(df: pd.DataFrame, threshold: float) -> tuple[pd.DataFrame, pd.D
 
 
 def main() -> None:
-    OUT_DIR.mkdir(exist_ok=True)
+    global LEAGUE, KICKOFF_FROM, OUT_DIR
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--league", default=LEAGUE)
+    ap.add_argument("--kickoff-from", help="only matches kicking off on/after this UTC date, YYYY-MM-DD")
+    args = ap.parse_args()
+    LEAGUE = args.league
+    if args.kickoff_from:
+        KICKOFF_FROM = pd.Timestamp(args.kickoff_from, tz="UTC")
+        OUT_DIR = OUT_DIR / f"{LEAGUE}_from_{args.kickoff_from}"
+    elif LEAGUE != "EPL":
+        OUT_DIR = OUT_DIR / LEAGUE
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     pd.set_option("display.width", 250)
     pd.set_option("display.max_columns", 40)
     df = build_minutes(cfg)
