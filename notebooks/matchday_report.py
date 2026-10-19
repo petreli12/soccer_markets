@@ -155,7 +155,8 @@ def report_executable(ex: pd.DataFrame) -> None:
 def sharp(d: dict[str, pd.DataFrame]) -> pd.DataFrame:
     if d["pinnacle"].empty:
         return pd.DataFrame()
-    pin = d["pinnacle"].dropna(subset=["match_id", "p_devig"])
+    pin = d["pinnacle"]
+    pin = pin[pin["bookmaker"] == "pinnacle"].dropna(subset=["match_id", "p_devig"])
     if pin.empty:
         return pd.DataFrame()
     max_age = pd.Timedelta(minutes=cfg.analysis.sharp.max_pinnacle_age_minutes)
@@ -369,7 +370,7 @@ def main() -> None:
     d = load(args.live_dir, args.date)
     sched = d["schedule"].drop_duplicates("match_id")
     print(f"matches: {len(sched)} ({', '.join(sorted(sched['match_id']))})")
-    print(f"rows: kalshi {len(d['kalshi']):,}, polymarket {len(d['polymarket']):,}, pinnacle {len(d['pinnacle']):,}")
+    print(f"rows: kalshi {len(d['kalshi']):,}, polymarket {len(d['polymarket']):,}, sportsbooks {len(d['pinnacle']):,}")
     for v in ("kalshi", "polymarket"):
         if not d[v].empty:
             sp = (d[v]["best_yes_ask"] - d[v]["best_yes_bid"]) * 100

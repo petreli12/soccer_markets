@@ -126,7 +126,9 @@ collector_lite:                           # `pm-edge collect-lite`: two-week con
   book_poll_seconds: 20                   # Kalshi + Polymarket books, all three outcomes
   orderbook_depth: 3
   odds_poll_seconds: 600                  # Pinnacle h2h; 1 credit per league per call
-  odds_bookmakers: [pinnacle]
+  # Pinnacle + the 9 US books quoting soccer_epl / soccer_uefa_champs_league (caesars/espnbet don't).
+  # <=10 bookmakers = 1 credit per call (verified via x-requests-last). All rows land in venue=pinnacle.
+  odds_bookmakers: [pinnacle, draftkings, fanduel, betmgm, betrivers, bovada, betus, betonlineag, lowvig, mybookieag]
   odds_credit_floor: 50                   # stop odds polling below this many remaining credits
   schedule_refresh_seconds: 1800          # re-list open matches on both venues and re-match
   schedule_lookahead_hours: 48
