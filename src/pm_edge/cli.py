@@ -72,6 +72,81 @@ def collect_lite(
     asyncio.run(collector_lite.run(cfg, leagues))
 
 
+@app.command()
+def fixtures(
+    date_from: str = typer.Option(..., "--from", help="UTC date YYYY-MM-DD (kickoff on/after)"),
+    date_to: str = typer.Option(..., "--to", help="UTC date YYYY-MM-DD (kickoff on/before, inclusive)"),
+    league: list[str] = typer.Option(None, help="League(s); default: every enabled league"),
+    pinnacle: bool = typer.Option(True, help="Check Pinnacle h2h availability (1 Odds API credit per league)"),
+) -> None:
+    """Upcoming fixtures paired across Kalshi + Polymarket, with Pinnacle availability."""
+    import pandas as pd
+
+    from pm_edge.collector_lite import CollectorLite
+
+    cfg = load_config()
+    leagues = league or [name for name, lc in cfg.leagues.items() if lc.enabled]
+    start = pd.Timestamp(date_from, tz="UTC")
+    end = pd.Timestamp(date_to, tz="UTC") + pd.Timedelta(days=1)
+    hours = max(0.0, (end - pd.Timestamp.now(tz="UTC")).total_seconds() / 3600)
+    cfg = cfg.model_copy(update={"collector_lite": cfg.collector_lite.model_copy(
+        update={"schedule_lookahead_hours": hours})})
+
+    async def go() -> list[dict]:
+        c = CollectorLite(cfg, leagues)
+        pin: dict[str, dict] = {}
+        try:
+            await c.refresh_schedule()
+            if pinnacle and c.odds is not None:
+                for lg in leagues:
+                    await c.poll_odds(lg, [])
+                for r in c.buffer.rows.get("pinnacle", []):
+                    if r["match_id"]:
+                        p = pin.setdefault(r["match_id"], {"outcomes": set(), "last_update": r["last_update"]})
+                        p["outcomes"].add(r["outcome"])
+        finally:
+            await asyncio.gather(c.kalshi.__aexit__(), c.poly.__aexit__(), return_exceptions=True)
+            if c.odds is not None:
+                await c.odds.__aexit__()
+        rows = []
+        for m in sorted(c.schedule.values(), key=lambda s: (s.kickoff_utc, s.league, s.match_id)):
+            if not start <= pd.Timestamp(m.kickoff_utc) < end:
+                continue
+            p = pin.get(m.match_id)
+            rows.append({"league": m.league, "kickoff_utc": f"{m.kickoff_utc:%Y-%m-%d %H:%M}", "home": m.home,
+                         "away": m.away, "kalshi": "kalshi" in m.venues, "polymarket": "polymarket" in m.venues,
+                         "pinnacle": bool(p) and len(p["outcomes"]) == 3,
+                         "pin_last_update": f"{p['last_update']:%m-%d %H:%M}" if p else "-"})
+        return rows
+
+    rows = asyncio.run(go())
+    if not rows:
+        typer.echo("no paired fixtures in range")
+        return
+    df = pd.DataFrame(rows)
+    pd.set_option("display.width", 200)
+    typer.echo(df.to_string(index=False))
+    typer.echo(f"\n{len(df)} fixtures; all three sources: {int((df.kalshi & df.polymarket & df.pinnacle).sum())}; "
+               f"by league {df.groupby('league').size().to_dict()}")
+
+
+@app.command()
+def watchdog(
+    stale_minutes: float = typer.Option(None, help="Override collector_lite.alert_stale_minutes"),
+    test: bool = typer.Option(False, help="Send one test notification and exit"),
+) -> None:
+    """One watchdog check of collect-lite output; push ntfy alerts. Run it every minute."""
+    from pm_edge.alerts import notify, run_watchdog
+    from pm_edge.config import Secrets
+
+    logging.getLogger().setLevel(logging.INFO)
+    if test:
+        ok = notify(Secrets().ntfy_topic, "pm-edge test", "Test notification from pm-edge watchdog.")
+        raise typer.Exit(0 if ok else 1)
+    for key, kind, msg in run_watchdog(load_config(), stale_minutes=stale_minutes):
+        typer.echo(f"{kind} {key}: {msg}")
+
+
 @app.command("thin-scan")
 def thin_scan(
     league: list[str] = typer.Option(None, help="League(s); default: every enabled league"),

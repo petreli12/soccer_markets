@@ -15,6 +15,8 @@
      snapshot of the same token at or before it (within 30 s): midpoint vs last_trade_price.
 
 Run:  source .venv/bin/activate && python notebooks/matchday_report.py [--date 2026-10-12 ...] [--live-dir data/live]
+Combined decision summary over a kickoff-date range, PASS/FAIL against --threshold (20%) first:
+      python notebooks/matchday_report.py --from 2026-10-19 --to 2026-10-26
 """
 
 from __future__ import annotations
@@ -199,16 +201,14 @@ def report_sharp(sh: pd.DataFrame) -> None:
 
 def outcome_roles(ok: pd.DataFrame) -> pd.Series:
     """'draw', or 'favourite'/'underdog' by Pinnacle's median de-vigged home vs away probability."""
-    p = ok[ok["outcome"] != "draw"].groupby(["match_id", "outcome"])["p_devig"].median().unstack()
-    fav = (p.get("home") >= p.get("away")).map({True: "home", False: "away"})
+    o = ok["outcome"].str.upper()
+    p = ok[o != "DRAW"].assign(o=o).groupby(["match_id", "o"])["p_devig"].median().unstack()
+    fav = (p["HOME"] >= p["AWAY"]).map({True: "HOME", False: "AWAY"})
     role = ok["match_id"].map(fav)
-    return pd.Series(
-        np.where(ok["outcome"] == "draw", "draw", np.where(ok["outcome"] == role, "favourite", "underdog")),
-        index=ok.index,
-    )
+    return pd.Series(np.where(o == "DRAW", "draw", np.where(o == role, "favourite", "underdog")), index=ok.index)
 
 
-def report_decision(sh: pd.DataFrame, final_minutes: float = 180, cents: float = 3.0) -> None:
+def decision(sh: pd.DataFrame, final_minutes: float = 180, cents: float = 3.0) -> dict | None:
     """Decision metric: share of matches where a venue's mid is >= 3c from fresh Pinnacle in the final 3h.
 
     Base = matches with at least one fresh comparison (Pinnacle last_update within the age limit)
@@ -216,49 +216,70 @@ def report_decision(sh: pd.DataFrame, final_minutes: float = 180, cents: float =
     underdog) because the three probabilities sum to ~1, so a venue above Pinnacle on one outcome
     is below on another. Per (venue, match, outcome) the sign is that of the largest |gap|.
     """
-    print(f"\n=== DECISION: mid vs fresh Pinnacle >= {cents:g}c, final {final_minutes / 60:g}h ===")
     if sh.empty:
-        print("  no Pinnacle comparisons")
-        return
-    ok = sh[sh["mid"].notna() & sh["fresh"] & (sh["minutes_to_kickoff"] > 0)
-            & (sh["minutes_to_kickoff"] <= final_minutes)].copy()
+        return None
+    window = sh["mid"].notna() & (sh["minutes_to_kickoff"] > 0) & (sh["minutes_to_kickoff"] <= final_minutes)
+    res: dict = {"stale_dropped": int((window & ~sh["fresh"]).sum()), "in_window": int(window.sum()),
+                 "final_minutes": final_minutes, "cents": cents}
+    ok = sh[window & sh["fresh"]].copy()
     if ok.empty:
-        print("  no fresh comparisons in the window")
-        return
+        return res
     ok["hit"] = (ok["gap"].abs() * 100).round(6) >= cents
     ok["role"] = outcome_roles(ok)
     per = ok.groupby(["match_id", "venue"])["hit"].any().unstack()
-    n = len(per)
-    either = per.any(axis=1)
-    print(f"  matches with a fresh comparison: {n}")
-    for v in per.columns:
-        base = per[v].notna().sum()
-        print(f"  {v:10s}: {int(per[v].fillna(False).sum())}/{base} matches ({per[v].fillna(False).sum() / max(base, 1):.0%})")
-    print(f"  either    : {int(either.sum())}/{n} matches ({either.mean():.0%})")
-
+    either = per.fillna(False).any(axis=1)
+    res.update(n=len(per), either=int(either.sum()), share=float(either.mean()),
+               per_venue={v: (int(per[v].fillna(False).sum()), int(per[v].notna().sum())) for v in per.columns},
+               hit_matches=sorted(either[either].index))
     hits = ok[ok["hit"]]
-    if hits.empty:
-        return
-    idx = hits["gap"].abs().groupby([hits["venue"], hits["match_id"], hits["outcome"]]).idxmax()
-    top = hits.loc[idx.values].assign(
-        above=lambda x: x["gap"] > 0,
-        n_hits=hits.groupby(["venue", "match_id", "outcome"]).size().values,
-        same_sign=hits.assign(s=np.sign(hits["gap"])).groupby(["venue", "match_id", "outcome"])["s"]
-        .agg(lambda s: max((s > 0).mean(), (s < 0).mean())).values,
-    )
-    print("  largest gap per (venue, match, outcome) with a hit:")
-    print(top.sort_values(["venue", "match_id"])[
-        ["venue", "match_id", "outcome", "role", "minutes_to_kickoff", "mid", "p_devig", "gap", "n_hits", "same_sign"]
-    ].round(4).to_string(index=False))
-    print("  direction across matches (venue above / below Pinnacle, by outcome role):")
-    for (v, role), g in top.groupby(["venue", "role"]):
-        up, dn = int(g["above"].sum()), int((~g["above"]).sum())
-        verdict = "consistent" if (up == 0 or dn == 0) and len(g) >= 2 else ("mixed" if up and dn else "single")
-        print(f"    {v:10s} {role:9s}: above {up}, below {dn} over {g['match_id'].nunique()} matches -> {verdict}")
+    if not hits.empty:
+        keys = ["venue", "match_id", "outcome"]
+        idx = hits["gap"].abs().groupby([hits[k] for k in keys]).idxmax()
+        top = hits.loc[idx.values].assign(
+            above=lambda x: x["gap"] > 0,
+            n_hits=hits.groupby(keys).size().values,
+            same_sign=hits.assign(s=np.sign(hits["gap"])).groupby(keys)["s"]
+            .agg(lambda s: max((s > 0).mean(), (s < 0).mean())).values,
+        )
+        res["top"] = top.sort_values(["venue", "match_id"])
+        rows = []
+        for (v, role), g in top.groupby(["venue", "role"]):
+            up, dn = int(g["above"].sum()), int((~g["above"]).sum())
+            rows.append({"venue": v, "role": role, "above": up, "below": dn, "matches": g["match_id"].nunique(),
+                         "verdict": "consistent" if (up == 0 or dn == 0) and len(g) >= 2
+                         else ("mixed" if up and dn else "single")})
+        res["direction"] = pd.DataFrame(rows)
     sg = ok.groupby(["venue", "role", "match_id"])["gap"].mean().groupby(["venue", "role"])
+    res["signed"] = pd.DataFrame({"matches": sg.size(), "mean_c": sg.mean() * 100,
+                                  "share_above": sg.apply(lambda s: (s > 0).mean())})
+    return res
+
+
+def report_decision(res: dict | None) -> None:
+    print("\n=== DECISION: mid vs fresh Pinnacle >= 3c, final 3h ===")
+    if res is None:
+        print("  no Pinnacle comparisons")
+        return
+    print(f"  comparisons in the final {res['final_minutes'] / 60:g}h with a venue snapshot: {res['in_window']}; "
+          f"stale Pinnacle (last_update > {cfg.analysis.sharp.max_pinnacle_age_minutes} min) dropped: "
+          f"{res['stale_dropped']}")
+    if "n" not in res:
+        print("  no fresh comparisons in the window")
+        return
+    print(f"  matches with a fresh comparison: {res['n']}")
+    for v, (h, base) in res["per_venue"].items():
+        print(f"  {v:10s}: {h}/{base} matches ({h / max(base, 1):.0%})")
+    print(f"  either    : {res['either']}/{res['n']} matches ({res['share']:.0%})")
+    if "top" in res:
+        print("  largest gap per (venue, match, outcome) with a hit:")
+        print(res["top"][["venue", "match_id", "outcome", "role", "minutes_to_kickoff", "mid", "p_devig", "gap",
+                          "n_hits", "same_sign"]].round(4).to_string(index=False))
+        print("  direction across matches (venue above / below Pinnacle, by outcome role):")
+        for r in res["direction"].itertuples():
+            print(f"    {r.venue:10s} {r.role:9s}: above {r.above}, below {r.below} over {r.matches} matches "
+                  f"-> {r.verdict}")
     print("  signed mean gap per match, all fresh final-window comparisons (share of matches with venue above):")
-    print(pd.DataFrame({"matches": sg.size(), "mean_c": sg.mean() * 100,
-                        "share_above": sg.apply(lambda s: (s > 0).mean())}).round(2).to_string())
+    print(res["signed"].round(2).to_string())
 
 
 async def history_vs_live(d: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -300,13 +321,51 @@ def report_history(hv: pd.DataFrame) -> None:
           f"{hv['midpoint'].isna().sum()}")
 
 
+def combined(d: dict[str, pd.DataFrame], date_from: str, date_to: str, threshold: float) -> None:
+    """Decision summary over every match in a kickoff-date range, PASS/FAIL line first."""
+    res = decision(sharp(d))
+    ex = executable(d)
+    n = (res or {}).get("n", 0)
+    if n:
+        verdict = "PASS" if res["share"] >= threshold else "FAIL"
+        print(f"{verdict}: {res['either']}/{n} matches ({res['share']:.0%}) had either venue's mid >= 3c from fresh "
+              f"Pinnacle in the final 3h (threshold {threshold:.0%}); kickoffs {date_from}..{date_to}")
+    else:
+        print(f"NO DATA: no fresh Pinnacle comparisons in the final 3h for kickoffs {date_from}..{date_to}")
+    sched = d["schedule"].drop_duplicates("match_id")
+    collected = set(d["kalshi"]["match_id"]) | set(d["polymarket"]["match_id"]) if not d["kalshi"].empty or not \
+        d["polymarket"].empty else set()
+    opened = sched[sched["kickoff_utc"] - pd.Timedelta(hours=cfg.collector_lite.window_before_kickoff_hours)
+                   <= pd.Timestamp.now(tz="UTC")]
+    missing = sorted(set(opened["match_id"]) - collected)
+    print(f"\nmatches scheduled in range: {len(sched)} ({len(opened)} with the window opened); with book data: "
+          f"{len(collected)}; with a fresh Pinnacle comparison: {n}"
+          + (f"; window opened but no book data: {', '.join(missing)}" if missing else ""))
+    report_decision(res)
+    if res and res.get("hit_matches"):
+        print("  matches with a hit:", ", ".join(res["hit_matches"]))
+    report_executable(ex)
+    if not ex.empty:
+        print(f"  matches with any profitable tick ($100 ref / best level): "
+              f"{ex.loc[ex['net_edge_ref'] > 0, 'match_id'].nunique()} / {ex.loc[ex['net_edge_top'] > 0, 'match_id'].nunique()}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", action="append", help="kickoff date(s) UTC, YYYY-MM-DD; default all collected")
+    ap.add_argument("--from", dest="date_from", help="combined mode: first kickoff date UTC, YYYY-MM-DD")
+    ap.add_argument("--to", dest="date_to", help="combined mode: last kickoff date UTC (inclusive)")
+    ap.add_argument("--threshold", type=float, default=0.20, help="combined mode PASS threshold (share of matches)")
     ap.add_argument("--live-dir", default=cfg.collector_lite.live_dir)
     ap.add_argument("--skip-history", action="store_true")
     args = ap.parse_args()
     pd.set_option("display.width", 220)
+    if args.date_from or args.date_to:
+        if not (args.date_from and args.date_to):
+            ap.error("--from and --to go together")
+        dates = pd.date_range(args.date_from, args.date_to, freq="D").strftime("%Y-%m-%d").tolist()
+        combined(load(args.live_dir, dates), args.date_from, args.date_to, args.threshold)
+        return
     d = load(args.live_dir, args.date)
     sched = d["schedule"].drop_duplicates("match_id")
     print(f"matches: {len(sched)} ({', '.join(sorted(sched['match_id']))})")
@@ -319,7 +378,7 @@ def main() -> None:
     report_executable(executable(d))
     sh = sharp(d)
     report_sharp(sh)
-    report_decision(sh)
+    report_decision(decision(sh))
     if not args.skip_history:
         report_history(asyncio.run(history_vs_live(d)))
 

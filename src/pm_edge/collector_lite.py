@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import signal
 import time
@@ -34,7 +35,8 @@ from typing import Any
 
 import pandas as pd
 
-from pm_edge.config import Config
+from pm_edge.alerts import notify, write_json_atomic
+from pm_edge.config import Config, Secrets
 from pm_edge.devig import devig
 from pm_edge.ingest.common import matches_to_frame
 from pm_edge.ingest.kalshi import KalshiIngest
@@ -142,6 +144,54 @@ class CollectorLite:
             self.odds = None
         self.stop = asyncio.Event()
         self.stats = {"ticks": 0, "book_rows": 0, "odds_calls": 0, "errors": 0}
+        self.health: dict[str, dict[str, Any]] = {
+            v: {"failing_since": None, "consecutive_failures": 0, "last_ok": None, "last_error": None}
+            for v in ("kalshi", "polymarket", "pinnacle")
+        }
+        self.window: dict[str, Any] | None = None
+        self.topic = Secrets().ntfy_topic
+        self.status_path = cfg.resolve(self.lc.live_dir) / "status.json"
+
+    def mark(self, venue: str, error: BaseException | None) -> None:
+        h = self.health[venue]
+        now = datetime.now(UTC)
+        if error is None:
+            h.update(failing_since=None, consecutive_failures=0, last_ok=now)
+        else:
+            h["failing_since"] = h["failing_since"] or now
+            h["consecutive_failures"] += 1
+            h["last_error"] = repr(error)[:200]
+        if self.window is not None and error is not None:
+            self.window["errors"] += 1
+
+    # -- window tracking / alerts -----------------------------------------------------------
+
+    def track_window(self, active: list[ScheduledMatch], now: datetime) -> str | None:
+        """Update the open window; return its summary text when it has just closed."""
+        if active:
+            if self.window is None:
+                self.window = {"start": now, "matches": set(), "polls": 0, "errors": 0, "odds_calls": 0}
+                log.info("window opened")
+            self.window["matches"].update(m.match_id for m in active)
+            return None
+        if self.window is None:
+            return None
+        w, self.window = self.window, None
+        mins = (now - w["start"]).total_seconds() / 60
+        credits = self.odds.remaining if self.odds else "disabled"
+        return (f"Window {w['start']:%m-%d %H:%M}-{now:%H:%M}Z ({mins:.0f} min): {len(w['matches'])} matches "
+                f"({', '.join(sorted(w['matches']))}); polls {w['polls']}; errors {w['errors']}; "
+                f"Pinnacle calls {w['odds_calls']}; credits remaining {credits}")
+
+    def write_status(self, active: list[ScheduledMatch]) -> None:
+        try:
+            write_json_atomic(self.status_path, {
+                "ts": datetime.now(UTC), "pid": os.getpid(), "active": [m.match_id for m in active],
+                "stats": self.stats, "venues": self.health,
+                "credits": self.odds.remaining if self.odds else None,
+            })
+        except OSError as exc:
+            log.warning("status write failed: %r", exc)
 
     # -- schedule ---------------------------------------------------------------------------
 
@@ -263,11 +313,15 @@ class CollectorLite:
         for venue, result in zip(("kalshi", "polymarket"), await asyncio.gather(kalshi(), poly(), return_exceptions=True)):
             if isinstance(result, BaseException):
                 self.stats["errors"] += 1
+                self.mark(venue, result)
                 log.error("books: %s poll failed: %r", venue, result)
                 continue
+            self.mark(venue, None)
             self.buffer.add(venue, result)
             self.stats["book_rows"] += len(result)
         self.stats["ticks"] += 1
+        if self.window is not None:
+            self.window["polls"] += 1
 
     async def poll_odds(self, league: str, active: list[ScheduledMatch]) -> None:
         if self.odds is None:
@@ -281,9 +335,13 @@ class CollectorLite:
             return
         except Exception as exc:
             self.stats["errors"] += 1
+            self.mark("pinnacle", exc)
             log.error("odds: %s poll failed: %r", league, exc)
             return
+        self.mark("pinnacle", None)
         self.stats["odds_calls"] += 1
+        if self.window is not None:
+            self.window["odds_calls"] += 1
         tol = timedelta(minutes=self.cfg.matching.kickoff_tolerance_minutes)
         by_teams = {(m.home, m.away): m for m in self.schedule.values() if m.league == league}
         df = pd.DataFrame(rows)
@@ -334,6 +392,11 @@ class CollectorLite:
                     next_sched = t + self.lc.schedule_refresh_seconds
                 now = datetime.now(UTC)
                 active = self.active(now)
+                summary = self.track_window(active, now)
+                if summary:
+                    log.info("window closed: %s", summary)
+                    await asyncio.to_thread(notify, self.topic, "pm-edge window closed", summary, "default",
+                                            "soccer")
                 if active and t >= next_book:
                     next_book = t + self.lc.book_poll_seconds
                     await self.poll_books(active)
@@ -349,6 +412,7 @@ class CollectorLite:
                     if n:
                         log.debug("flushed %d rows", n)
                     next_flush = t + self.lc.flush_seconds
+                self.write_status(active)
                 if t >= next_beat:
                     nxt = self.next_window_start(now)
                     log.info("heartbeat: %d active, %d scheduled, next window %s, stats %s, credits %s",

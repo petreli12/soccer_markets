@@ -23,6 +23,8 @@ pm-edge backfill --league EPL --days 60 --venue polymarket   # one venue only
 pm-edge match                             # pair events across venues -> data/processed/, data/unmatched_review.csv
 pm-edge verify-kalshi-gaps --league EPL   # re-test "missing candle == no change"
 pm-edge collect-lite                      # live pre-kickoff snapshots -> data/live/venue=*/date=*/
+pm-edge fixtures --from 2026-10-20 --to 2026-10-26   # paired fixtures + Pinnacle availability (1 credit/league)
+pm-edge watchdog                          # one alert check (run every minute; see Push alerts)
 pm-edge thin-scan --league UCL --kickoff-within-hours 36   # Polymarket non-moneyline books, 24h volume, trades in last 3h
 ```
 
@@ -67,6 +69,37 @@ launchctl list | grep pmedge                                            # "<pid>
 tail -f data/live/collector.log                                         # heartbeat every 10 min
 launchctl unload -w ~/Library/LaunchAgents/com.pmedge.collector.plist   # stop (SIGTERM -> final flush)
 ```
+
+### Push alerts (ntfy.sh)
+
+Set `NTFY_TOPIC=<hard-to-guess name>` in `.env`, then subscribe to that topic in the ntfy phone app (anyone who knows the name can read it). `pm-edge watchdog --test` sends a test message.
+
+- **Watchdog (`pm-edge watchdog`):** a one-shot check, run every minute by its own scheduler, so it still alerts when the collector is dead. During an open window it alerts when:
+  - no new Kalshi/Polymarket parquet part has been written for 10 min (`alert_stale_minutes`), or
+  - any venue (Kalshi, Polymarket, Pinnacle) has failed every call for 10 min.
+
+  It repeats every 30 min while a problem persists and sends one "recovered" message when it clears.
+- **Window summary:** when a collection window closes, the collector itself sends one message: matches covered, polls, errors, Pinnacle calls, credits remaining. The summary covers the window since the collector last started, and is not sent if the collector is down at window close.
+
+macOS, as `~/Library/LaunchAgents/com.pmedge.watchdog.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.pmedge.watchdog</string>
+    <key>ProgramArguments</key><array><string>REPO/.venv/bin/pm-edge</string><string>watchdog</string></array>
+    <key>WorkingDirectory</key><string>REPO</string>
+    <key>StartInterval</key><integer>60</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>REPO/data/live/watchdog.log</string>
+    <key>StandardErrorPath</key><string>REPO/data/live/watchdog.log</string>
+</dict>
+</plist>
+```
+
+Load it with `launchctl load -w ~/Library/LaunchAgents/com.pmedge.watchdog.plist`; if launchctl answers `Load failed: 5`, run the same command again. On the VPS, use a systemd timer (`OnUnitActiveSec=60`) or cron: `* * * * * cd ~/pm-edge-soccer && .venv/bin/pm-edge watchdog >> data/live/watchdog.log 2>&1`.
 
 `KeepAlive` with `SuccessfulExit=false` restarts it after a crash. `caffeinate -i` stops idle sleep, but closing the lid still sleeps the Mac. Check it is still running a few minutes after any restart.
 
@@ -147,7 +180,7 @@ scp -r ubuntu@VPS:pm-edge-soccer/data/live/venue=* data/live/
 
 Part files have unique names (`part-<timestamp>-<random>.parquet`), so copying merges with whatever the Mac already collected and never overwrites it. Don't use `--delete`. Copying while the collector runs is fine, because files are written once and never modified.
 
-After a matchday: `python notebooks/matchday_report.py --date 2026-10-12`. It reports executable cross-venue edges, divergence from Pinnacle, and whether Polymarket's history value is the midpoint or the last trade. It ends with the run's decision metric: the share of matches where either venue's mid was at least 3c from a fresh Pinnacle price in the final 3 h, and whether the gap's direction (by favourite, draw, underdog) is consistent across matches.
+After a matchday: `python notebooks/matchday_report.py --date 2026-10-12`. It reports executable cross-venue edges, divergence from Pinnacle, and whether Polymarket's history value is the midpoint or the last trade. It ends with the run's decision metric: the share of matches where either venue's mid was at least 3c from a fresh Pinnacle price in the final 3 h, and whether the gap's direction (by favourite, draw, underdog) is consistent across matches. For a whole run: `python notebooks/matchday_report.py --from 2026-10-19 --to 2026-10-26`. It prints a PASS/FAIL line first (at least 20% of matches, `--threshold`), then the decision metric, the stale Pinnacle comparisons dropped, and executable cross-venue edges.
 
 ## Tests
 

@@ -19,6 +19,7 @@ class Secrets(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", extra="ignore")
 
     odds_api_key: str | None = None
+    ntfy_topic: str | None = None
 
 
 class KalshiLeague(BaseModel):
@@ -166,6 +167,8 @@ class Collector(BaseModel):
 
 
 class CollectorLite(BaseModel):
+    alert_stale_minutes: float = 10
+    alert_repeat_minutes: float = 30
     window_before_kickoff_hours: float = 3
     window_after_kickoff_hours: float = 0
     book_poll_seconds: int = 20

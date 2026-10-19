@@ -132,6 +132,8 @@ collector_lite:                           # `pm-edge collect-lite`: two-week con
   schedule_lookahead_hours: 48
   flush_seconds: 120                      # buffered rows are appended to parquet this often
   live_dir: data/live
+  alert_stale_minutes: 10                 # ntfy alert: no new rows / a venue failing this long in a window
+  alert_repeat_minutes: 30                # repeat an alert this often while it persists
 
 decision:
   min_executable_episodes_per_matchday: 3
